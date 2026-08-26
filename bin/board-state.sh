@@ -22,11 +22,16 @@
 # truth instead of memory. Reaches nothing but localhost; changes nothing.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PORT=$(python3 -c "import json;print(json.load(open('$DIR/barehands.json')).get('port',8794))" 2>/dev/null || echo 8794)
+# Portable interpreter. python3 does not exist on Windows, where the
+# python.org installer provides py and python instead. python3 is tried
+# FIRST so macOS and Linux resolve exactly as before.
+PYBIN=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || command -v py 2>/dev/null || true)
+if [ -z "$PYBIN" ]; then echo "No Python found (tried python3, python, py)." >&2; exit 1; fi
+PORT=$("$PYBIN" -c "import json;print(json.load(open('$DIR/barehands.json')).get('port',8794))" 2>/dev/null || echo 8794)
 STATE=$(curl -sS --max-time 3 "http://127.0.0.1:$PORT/state" 2>/dev/null) || {
     echo "The board is dark — the barehands server isn't running."; exit 1; }
 export STATE
-python3 <<'PY'
+"$PYBIN" <<'PY'
 import json, os
 
 try:
