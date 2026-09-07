@@ -189,7 +189,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
   @keyframes rowflash {
     from { background:rgba(140,240,225,0.4); }
     to   { background:transparent; } }
-  .card p  { margin:0; font-size:17px; line-height:1.45; color:#dcf5ee; text-shadow:0 1px 3px rgba(3,18,16,0.55); }
+  .card p  { margin:0; font-size:17px; line-height:1.45; color:#dcf5ee; text-shadow:0 1px 3px rgba(3,18,16,0.55); white-space:pre-wrap; }
   .card p:empty { display:none; }
   .card.grabbed, .panel.grabbed { border-color:#8ff0e4;
           box-shadow:0 12px 60px rgba(0,0,0,0.7), 0 0 44px rgba(111,229,214,0.35); }
@@ -1148,6 +1148,22 @@ function findItem(title) {
          items[items.length - 1];
 }
 
+// THE PRESENT VERB'S OWN LOOKUP (2026-09-06). findItem NEVER returns
+// null -- on a miss it falls back to the last-touched or last-staged
+// item, which is exactly right for yank/hover/explode, because those
+// verbs act on something already on the board. present is the opposite
+// verb: it CREATES what isn't there, so a miss has to read as a miss.
+// Sharing findItem meant presenting a note onto a board holding only
+// THE RING matched the ring, skipped the makeCard branch entirely, and
+// obediently spotlit the ring instead of the note -- every time, for
+// two days, while the server-side /note fetch tested perfectly clean.
+function findExact(title) {
+  if (!title) return null;
+  const t = title.toLowerCase();
+  return items.find(i => (i.def.title || "").toLowerCase().includes(t) ||
+                         (i.def.src || "").toLowerCase().includes(t)) || null;
+}
+
 function deliver(c) {
   // GLASS ERA (Jared's law 8/13: "no more throwing me stuff from the
   // side of the screen") — deliveries MATERIALIZE at his reach: the
@@ -1167,15 +1183,19 @@ function give(c) {
   if (ci != null) c.anim = { k: "give", t: 0, ci: +ci };
 }
 
-function applyCmds(cmds) {
-  (cmds || []).forEach(c => {
+async function applyCmds(cmds) {
+  for (const c of (cmds || [])) {
     if (c.a === "clear") {
       items.forEach(killItem);          // scorched earth — ring included
     } else if (c.a === "reset") {
       // Jared's law (2026-08-13): reset = the GATHER — board swept,
       // THE RING materializes center stage (the arms-together state);
       // clear = literally everything off, the ring included
-      loadTree().then(() => spawnStage(0.5, 0.42));
+      // Sequential and awaited (2026-09-07 fix) so a reset's network
+      // round trip can't land after — and destroy — commands batched
+      // behind it.
+      await loadTree();
+      spawnStage(0.5, 0.42);
     } else if (c.a === "explode" || c.a === "assemble") {
       // THE EXPLODE verbs (2026-08-14): title-match first, else the
       // freshest model on the board; assemble snaps the flight home
@@ -1239,7 +1259,8 @@ function applyCmds(cmds) {
       // THE PRESENT verb: show-and-tell. Stage (or find) the thing, fly
       // it center stage, enlarge it, dim everything else. Ends when the
       // person grabs it, it leaves the board, or a new present/clear.
-      let t = c.title ? findItem(c.title) : null;
+      let t = c.title ? findExact(c.title) : null;
+      const fresh = !t;              // did WE build it for this command?
       if (!t && c.src) {
         t = isModelSrc(c.src) ? makeModel(c.src, c.title, c.mode, c.lift)
                               : makeImage(c.src, c.title);
@@ -1253,13 +1274,26 @@ function applyCmds(cmds) {
           items.push(t);
         }
         if (c.open && t.def && t.def.file) {
-          openPanel(t);
-          const p = items.filter(k => k.type === "panel").pop();
-          presentItem(p || t);
+          // openPanel is async (it fetches the note). Awaiting it is
+          // what makes the SPOTLIGHT land on the opened panel; calling
+          // it bare filtered items for a panel that did not exist yet
+          // and spotlit the bare card instead.
+          openPanel(t).then(() => {
+            const p = items.filter(k => k.type === "panel").pop();
+            presentItem(p || t);
+            // THE CARRIER CARD (2026-09-06): when present builds a card
+            // purely to carry a note reference, the PANEL is the thing
+            // being shown, so the card has done its job. Left alive it
+            // lingered at dead centre at opacity 0.05 -- invisible, but
+            // grabbable by accident and present in every board reading.
+            // Only ever kill one WE made: a card the person already had
+            // staged was MATCHED, not created, and must stay.
+            if (p && fresh && t.type === "card") killItem(t);
+          });
         } else presentItem(t);
       }
     }
-  });
+  }
 }
 
 // ---- THE PRESENT machinery: one spotlit item, everything else dims.
