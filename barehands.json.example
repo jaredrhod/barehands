@@ -1,5 +1,14 @@
 {
   "name": "Assistant",
+  "version": "6.7.0",
+  "features": [
+    "live-ring",
+    "faster-polling",
+    "notes-orbs",
+    "media-airlock",
+    "3d-models",
+    "ai-state-sync"
+  ],
   "port": 8794,
   "orbs": [
     {

@@ -28,6 +28,7 @@ Endpoints:
   GET  /state                  the render page mirrors the scene from here
   POST /cmd                    board commands (your AI -> the board)
   GET  /config                 the barehands.json config (name + orbs)
+  GET  /meta                   runtime metadata: version + feature flags
   GET  /tree?orb=N             a notes orb's folder tree — read-only, JAILED
   GET  /note?f=N/<rel>         one note's text — read-only, JAILED
   GET  /props                  the media airlock as a browsable tree
@@ -36,7 +37,7 @@ Endpoints:
 Config lives in barehands.json next to this file:
   { "name": "Assistant", "port": 8794,
     "orbs": [ { "title": "Notes", "path": "sample-notes", "kind": "notes" },
-              { "title": "Props", "path": "media",        "kind": "media" } ] }
+              { "title": "Props", "path": "media", "kind": "media" } ] }
 
 "notes" orbs may point at ANY folder of markdown (an Obsidian vault is
 just a folder of markdown). The "media" orb may point anywhere too, so
@@ -57,14 +58,29 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+APP_VERSION = "6.7.0"
+FEATURES = [
+    "live-ring",
+    "faster-polling",
+    "notes-orbs",
+    "media-airlock",
+    "3d-models",
+    "ai-state-sync",
+]
 
 
 def load_config():
-    cfg = {"name": "Assistant", "port": 8794, "orbs": [],
-           # Seconds before a non-idle ring state is treated as stale and
-           # shown as idle. Only ever rescues a writer that died without
-           # saying goodbye; see the note in /orb.
-           "state_timeout_s": 600}
+    cfg = {
+        "name": "Assistant",
+        "version": APP_VERSION,
+        "features": FEATURES[:],
+        "port": 8794,
+        "orbs": [],
+        # Seconds before a non-idle ring state is treated as stale and
+        # shown as idle. Only ever rescues a writer that died without
+        # saying goodbye; see the note in /orb.
+        "state_timeout_s": 600,
+    }
     try:
         cfg.update(json.loads((HERE / "barehands.json").read_text()))
     except Exception:
@@ -74,8 +90,12 @@ def load_config():
             {"title": "Notes", "path": "sample-notes", "kind": "notes"},
             {"title": "Props", "path": "media", "kind": "media"},
         ]
+    if not cfg.get("version"):
+        cfg["version"] = APP_VERSION
+    if not cfg.get("features"):
+        cfg["features"] = FEATURES[:]
     for orb in cfg["orbs"]:
-        orb["path"] = str(Path(str(orb.get("path", ""))).expanduser())
+        orb["path"] = str(Path(str(orb.get("path", "")).expanduser()))
     return cfg
 
 
@@ -222,10 +242,23 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/config":
             # the page builds its ring name + orb bloom from this
-            self._json({"name": CONFIG.get("name", "Assistant"),
-                        "orbs": [{"title": o.get("title", "?"),
-                                  "kind": o.get("kind", "notes")}
-                                 for o in CONFIG["orbs"]]})
+            self._json({
+                "name": CONFIG.get("name", "Assistant"),
+                "version": CONFIG.get("version", APP_VERSION),
+                "features": CONFIG.get("features", FEATURES),
+                "orbs": [{"title": o.get("title", "?"),
+                          "kind": o.get("kind", "notes")}
+                         for o in CONFIG["orbs"]],
+            })
+            return
+        if self.path == "/meta":
+            self._json({
+                "name": CONFIG.get("name", "Assistant"),
+                "version": CONFIG.get("version", APP_VERSION),
+                "features": CONFIG.get("features", FEATURES),
+                "state_timeout_s": STATE_TIMEOUT,
+                "port": int(CONFIG.get("port", 8794)),
+            })
             return
         if self.path.startswith("/tree"):
             # a notes orb's folder tree. Jailed to that orb's configured
@@ -288,16 +321,6 @@ class Handler(SimpleHTTPRequestHandler):
                         if sub["items"] or sub["dirs"] or documented:
                             out["dirs"].append(sub)
                     elif p.suffix.lower() in EXTS:
-                        # as_posix, because THE FOLDER IS THE RENDER LAW and
-                        # the law is read client-side with forward slashes.
-                        # str() of a path yields BACKSLASHES on Windows, so
-                        # "fx\fireball.png" never matched /\/fx\// in
-                        # stage.html: props in fx/ silently kept their card
-                        # frame and models in holo/ silently rendered solid
-                        # instead of as the blue wire. These strings become
-                        # URL fragments in the browser, where a backslash is
-                        # not a separator at all, so POSIX is the only
-                        # correct wire format here regardless of platform.
                         out["items"].append(p.relative_to(mroot).as_posix())
                 return out
             try:
@@ -317,18 +340,6 @@ class Handler(SimpleHTTPRequestHandler):
                 f = s_dir / "state"
                 s = f.read_text().strip().lower()
                 if s in ("idle", "listening", "thinking", "speaking"):
-                    # A STALE non-idle state DECAYS to idle, because the
-                    # only thing that ever writes "idle" is the writer
-                    # finishing. A writer that is killed, crashes, or is
-                    # force-quit mid-turn never writes it -- so the ring
-                    # sat on "thinking" forever, with no timeout, nothing
-                    # to reset it, and no way for anyone to guess why.
-                    #
-                    # This is a safety net for a DEAD writer, not a
-                    # liveness signal: a genuinely long turn will decay
-                    # too, and showing idle during real work is a far
-                    # smaller lie than claiming to think for eternity.
-                    # Raise state_timeout_s if your turns run longer.
                     age = time.time() - f.stat().st_mtime
                     if s == "idle" or age < STATE_TIMEOUT:
                         out["state"] = s
@@ -384,9 +395,9 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    (HERE / "state").mkdir(exist_ok=True)   # the ring's runtime files land here
+    (HERE / "state").mkdir(exist_ok=True)  # the ring's runtime files land here
     port = int(CONFIG.get("port", 8794))
-    print(f"barehands up: http://127.0.0.1:{port}/stage.html", flush=True)
+    print(f"barehands 6.7.0 up: http://127.0.0.1:{port}/stage.html", flush=True)
     print("  tracker (camera): open that URL in Chrome", flush=True)
     print("  render (overlay): same URL + ?role=render", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
